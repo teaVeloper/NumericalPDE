@@ -6,3 +6,4 @@ scipy
 numpy
 pandas
 webgui_jupyter_widgets
+jupytext
