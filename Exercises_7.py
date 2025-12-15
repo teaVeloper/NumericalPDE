@@ -111,26 +111,27 @@ import matplotlib.pyplot as plt
 # this saves me from copying and adopting the same parts on different places and possibly introducing errrors.
 #
 #
-# from __future__ import annotations
-#
-# from dataclasses import dataclass
-# from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
-#
-# import numpy as np
-# import matplotlib.pyplot as plt
-#
-# import ngsolve as ng
-# from ngsolve import (
-#     Mesh, H1, GridFunction, BilinearForm, LinearForm, TaskManager,
-#     CF, x, dx, grad, InnerProduct, Integrate, sin, cos, exp
-# )
-# import ngsolve.webgui as webgui
-#
-# Number = Union[int, float]
-# Params = Dict[str, Any]
-#
-# SolveFn = Callable[..., Tuple[Any, Any, Dict[str, Any]]]   # (gfu, mesh, extra)
-# ErrorFn = Callable[[Any, Any, Dict[str, Any]], float]      # (gfu, mesh, extra) -> float
+# %%
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+import ngsolve as ng
+from ngsolve import (
+    Mesh, H1, GridFunction, BilinearForm, LinearForm, TaskManager,
+    CF, x, dx, grad, InnerProduct, Integrate, sin, cos, exp
+)
+import ngsolve.webgui as webgui
+
+Number = Union[int, float]
+Params = Dict[str, Any]
+
+SolveFn = Callable[..., Tuple[Any, Any, Dict[str, Any]]]   # (gfu, mesh, extra)
+ErrorFn = Callable[[Any, Any, Dict[str, Any]], float]      # (gfu, mesh, extra) -> float
 
 # %% [markdown]
 # ## Core utilities (rates + annotations)
@@ -495,21 +496,25 @@ from ngsolve.meshes import Make1DMesh
 from math import pi
 
 
+from math import exp as mexp, pi
+from ngsolve import exp as ngexp, CF, sin, cos, x
+
 def uex_duex_eps(eps: float):
-    k = 11 * pi
-    denom = 1 + (eps * k) ** 2
+    k = 11*pi
+    denom = 1 + (eps*k)**2
 
+    # scalar constants (Python floats!)
     A = eps / denom
-    B = -1 / (k * denom)
+    B = -1.0 / (k*denom)
 
-    q = exp(-1 / eps)
-    inv_em1 = q / (1 - q)
+    q = mexp(-1.0/eps)                 # <-- float
+    inv_em1 = q / (1.0 - q)            # <-- float
 
-    C2 = -(2 / (k * denom)) * inv_em1
-    C1 = 1 / (k * denom) - C2
+    C2 = -(2.0/(k*denom)) * inv_em1    # <-- float
+    C1 = 1.0/(k*denom) - C2            # <-- float
 
-    u = C1 + C2 * exp(x / eps) + A * sin(k * x) + B * cos(k * x)
-    du = (C2 / eps) * exp(x / eps) + A * k * cos(k * x) - B * k * sin(k * x)
+    u  = C1 + C2*ngexp(x/eps) + A*sin(k*x) + B*cos(k*x)
+    du = (C2/eps)*ngexp(x/eps) + A*k*cos(k*x) - B*k*sin(k*x)
 
     return CF(u), CF(du)
 
@@ -670,8 +675,52 @@ from ngsolve.meshes import Make1DMesh
 from ngsolve import specialcf
 from math import pi
 
-def get_gls_solver(eps: float, beta: float = 1.0):
+def get_supg_solver(eps: float, beta: float = 1.0):
     uex, duex = uex_duex_eps(eps)
+    def fosls_solve(*, h: float, order: int, **params):
+        mesh = Make1DMesh(int(round(1/h)))
+        
+        # 1. Use a Compound Space: u in H1, sigma in H1
+        # We need H1 for sigma because we differentiate it in the Balance equation
+        V_u = H1(mesh, order=order, dirichlet=".*")
+        V_sig = H1(mesh, order=order) 
+        fes = V_u * V_sig
+        
+        (u, sig), (v, tau) = fes.TnT()
+        
+        # 2. Define the operators for the two equations
+        # Eq 1: Flux def (sig - ux = 0)
+        res1 = sig - grad(u)[0]
+        res1_test = tau - grad(v)[0]
+        
+        # Eq 2: PDE (-eps*sig_x + beta*sig = f) note: using sig instead of ux!
+        # We use sig.Diff(x) which is fine because sig is in H1
+        op2 = -eps * grad(sig)[0] + beta * sig 
+        op2_test = -eps * grad(tau)[0] + beta * tau
+        
+        # 3. LSFEM Bilinear Form (Symmetric!)
+        a = BilinearForm(fes, symmetric=True)
+        a += (res1 * res1_test) * dx
+        a += (op2 * op2_test) * dx
+        
+        # 4. Linear Form
+        f_func = CF(sin(11*pi*x))
+        L = LinearForm(fes)
+        # The source term f appears in the second equation's residual norm
+        L += (f_func * op2_test) * dx
+        
+        gfu = GridFunction(fes)
+        a.Assemble()
+        L.Assemble()
+        
+        # Solve
+        gfu.vec.data = a.mat.Inverse(freedofs=fes.FreeDofs()) * L.vec
+        
+        # Extract just the u component for plotting/error calc
+        gfu_u = gfu.components[0]
+    
+        return gfu_u, mesh, {"dofs": fes.ndof, "uex": uex, "duex": duex, "eps": eps, "beta": beta, "tau": tau}
+    return fosls_solve
 
     def solve(*, h: float, order: int, **params):
         N = max(2, int(round(1/h)))
@@ -681,50 +730,103 @@ def get_gls_solver(eps: float, beta: float = 1.0):
         V = H1(mesh, order=order, dirichlet=".*")
         u, v = V.TnT()
 
-        # elementwise derivatives (OK for H1 polynomials)
         ux  = u.Diff(x)
         vx  = v.Diff(x)
         uxx = ux.Diff(x)
-        vxx = vx.Diff(x)
 
-        # strong operator L(.) = -eps u'' + beta u'
         Lu = -eps*uxx + beta*ux
-        Lv = -eps*vxx + beta*vx
+        v_supg = beta*vx
 
-        # elementwise tau_K (use mesh_size, not a scalar)
         hK  = specialcf.mesh_size
-        Pe  = abs(beta)*hK/(2*eps + 1e-30)
-        cothPe = cosh(Pe)/(sinh(Pe) + 1e-30)
-        tau = (hK/(2*abs(beta) + 1e-30)) * (cothPe - 1/(Pe + 1e-30))
+
+        # robust tau: harmonic blend of advective and diffusive scalings
+        tau_adv  = hK/(2*abs(beta) + 1e-30)
+        tau_diff = hK*hK/(12*eps + 1e-30)
+        tau = 1.0/(1.0/tau_adv + 1.0/tau_diff)
 
         a = BilinearForm(V, symmetric=False)
-        # standard weak form
         a += eps * ux * vx * dx
         a += beta * ux * v  * dx
-        # GLS term (this is the “least squares” part)
-        a += tau * Lu * Lv * dx
+        a += tau * Lu * v_supg * dx
 
         L = LinearForm(V)
         L += f * v * dx
-        # consistent GLS rhs
-        L += tau * f * Lv * dx
+        L += tau * f * v_supg * dx
 
         gfu = GridFunction(V)
-        with TaskManager():
-            a.Assemble()
-            L.Assemble()
-            gfu.vec.data = a.mat.Inverse(freedofs=V.FreeDofs()) * L.vec
+        a.Assemble(); L.Assemble()
+        gfu.vec.data = a.mat.Inverse(freedofs=V.FreeDofs()) * L.vec
 
-        extra = {
-            "dofs": V.ndof,
-            "eps": float(eps),
-            "beta": float(beta),
-            "uex": uex,
-            "duex": duex,
-            # store tau expression for reuse in error norm (optional)
-            "tau": tau,
-        }
+        extra = {"eps": float(eps), "beta": float(beta), "uex": uex, "duex": duex, "tau": tau}
         return gfu, mesh, extra
+
+    return solve
+# %%
+def get_fosls_solver(eps: float, beta: float = 1.0):
+    uex, duex = uex_duex_eps(eps)
+    
+    def solve(*, h: float, order: int, **params):
+        # 1. Mesh
+        mesh = Make1DMesh(int(round(1/h)))
+        
+        # 2. FOSLS requires a System: u (scalar) and sigma (scalar flux)
+        # Both must be H1 to allow differentiation
+        V_u = H1(mesh, order=order, dirichlet=".*") # u=0 on boundary
+        V_sig = H1(mesh, order=order)               # sigma free
+        fes = V_u * V_sig
+        
+        (u, sig), (v, tau) = fes.TnT()
+        
+        # 3. The Operators
+        # Eq 1: Flux Definition:  sig - u_x = 0
+        # Eq 2: Balance Law:      -eps*sig_x + beta*sig = f
+        
+        u_x = grad(u)[0]
+        v_x = grad(v)[0]
+        sig_x = grad(sig)[0]
+        tau_x = grad(tau)[0]
+        
+        # Residual 1 (Flux): sig - u_x
+        res1 = sig - u_x
+        res1_test = tau - v_x
+        
+        # Residual 2 (PDE): -eps*sig_x + beta*sig
+        # Note: We use sig_x, avoiding second derivatives of u!
+        op2 = -eps * sig_x + beta * sig 
+        op2_test = -eps * tau_x + beta * tau
+        
+        # 4. Bilinear Form (Symmetric Least Squares)
+        # a( (u,sig), (v,tau) ) = (L1(u,sig), L1(v,tau)) + (L2(u,sig), L2(v,tau))
+        a = BilinearForm(fes, symmetric=True)
+        a += (res1 * res1_test) * dx
+        a += (op2 * op2_test) * dx
+        
+        # 5. Linear Form
+        f_func = CF(sin(11*pi*x))
+        L = LinearForm(fes)
+        # The source f is part of the second residual
+        L += (f_func * op2_test) * dx
+        
+        # 6. Solve
+        gfu = GridFunction(fes)
+        a.Assemble()
+        L.Assemble()
+        gfu.vec.data = a.mat.Inverse(freedofs=fes.FreeDofs()) * L.vec
+        
+        # 7. Extract Solution
+        # gfu.components[0] is u, gfu.components[1] is sigma
+        gfu_u = gfu.components[0]
+        
+        # We pass 'sigma' out in extra in case we want to plot flux later
+        extra = {
+            "dofs": fes.ndof, 
+            "uex": uex, 
+            "duex": duex, 
+            "gfu_sig": gfu.components[1],
+            "eps": eps,
+            "beta": beta,
+        }
+        return gfu_u, mesh, extra
 
     return solve
 
@@ -757,13 +859,74 @@ def err_GLS_norm_advecdiff(gfu, mesh, extra):
     val = Integrate(v*v + eps*vx*vx + tau*Lv*Lv, mesh)
     return float(np.sqrt(val))
 
+def err_SUPG_norm(gfu, mesh, extra):
+    eps  = float(extra["eps"])
+    beta = float(extra["beta"])
+    uex  = extra["uex"]
+    tau  = extra["tau"] # This is a CoefficientFunction from the solver
+
+    # --- 1. GridFunction Derivatives ---
+    # First derivative (Standard)
+    uh_x  = gfu.Diff(x)
+    
+    # Second derivative (MUST use 'hesse' operator)
+    # In 1D, the Hessian is a 1x1 matrix containing u_xx. 
+    # We select [0] to get it as a scalar.
+    uh_xx = gfu.Operator("hesse")[0]
+
+    # --- 2. Exact Solution Derivatives ---
+    # uex is symbolic (CF), so we can just chain Diff safely
+    u_x   = uex.Diff(x)
+    u_xx  = u_x.Diff(x)
+
+    # --- 3. Residual Calculation ---
+    v   = gfu - uex
+    vx  = uh_x - u_x
+    vxx = uh_xx - u_xx
+
+    # Calculate the residual of the ERROR (Lv)
+    # Strong form: -eps*u_xx + beta*u_x
+    Lv = -eps*vxx + beta*vx
+
+    # Integrate the GLS/SUPG norm
+    # ||e||^2_GLS = ||e||^2 + eps*||e'||^2 + tau*||Le||^2
+    val = Integrate(v*v + eps*vx*vx + tau*Lv*Lv, mesh)
+    
+    return float(np.sqrt(val))
+
+def err_fosls_functional(gfu, mesh, extra):
+    # Reconstruct the residuals to see how well we solved the system
+    eps = 1e-4 # You might want to pass this in extra if it varies
+    if "params" in extra: # Handle parameter passing if needed
+         pass
+         
+    # Retrieve the sigma component we saved earlier
+    gfu_sig = extra["gfu_sig"]
+    beta = extra["beta"]
+    
+    u_x = grad(gfu)[0]
+    sig = gfu_sig
+    sig_x = grad(gfu_sig)[0]
+    
+    # Exact f for residual calc
+    f = CF(sin(11*pi*x)) 
+    
+    # Recalculate residuals
+    res1 = sig - u_x
+    res2 = -eps*sig_x + beta*sig - f
+    
+    # The functional value J
+    val = Integrate(res1*res1 + res2*res2, mesh)
+    return float(np.sqrt(val))
+
+
 # %%
 
 import numpy as np
-gls_errors = {"L2": err_L2_advecdiff, "H1": err_H1_advecdiff, "GLS": err_GLS_norm_advecdiff}
+gls_errors = {"L2": err_L2_advecdiff, "H1": err_H1_advecdiff, "GLS": err_fosls_functional}
 for eps in eps_list:
     std = run_study(
-        solve_fn=get_gls_solver(eps, beta=1.0),
+        solve_fn=get_fosls_solver(eps, beta=1.0),
         hs=hs,
         orders=order,
         params_list=[{}],
