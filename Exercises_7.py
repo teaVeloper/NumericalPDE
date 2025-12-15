@@ -109,29 +109,28 @@ import matplotlib.pyplot as plt
 # calculating convergence for different parameters based on a specific solver-mesh-domain
 # plotting and drawing my results
 # this saves me from copying and adopting the same parts on different places and possibly introducing errrors.
-
-
-from __future__ import annotations
-
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
-
-import numpy as np
-import matplotlib.pyplot as plt
-
-import ngsolve as ng
-from ngsolve import (
-    Mesh, H1, GridFunction, BilinearForm, LinearForm, TaskManager,
-    CF, x, dx, grad, InnerProduct, Integrate, sin, cos, exp
-)
-import ngsolve.webgui as webgui
-
-Number = Union[int, float]
-Params = Dict[str, Any]
-
-SolveFn = Callable[..., Tuple[Any, Any, Dict[str, Any]]]   # (gfu, mesh, extra)
-ErrorFn = Callable[[Any, Any, Dict[str, Any]], float]      # (gfu, mesh, extra) -> float
-
+#
+#
+# from __future__ import annotations
+#
+# from dataclasses import dataclass
+# from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
+#
+# import numpy as np
+# import matplotlib.pyplot as plt
+#
+# import ngsolve as ng
+# from ngsolve import (
+#     Mesh, H1, GridFunction, BilinearForm, LinearForm, TaskManager,
+#     CF, x, dx, grad, InnerProduct, Integrate, sin, cos, exp
+# )
+# import ngsolve.webgui as webgui
+#
+# Number = Union[int, float]
+# Params = Dict[str, Any]
+#
+# SolveFn = Callable[..., Tuple[Any, Any, Dict[str, Any]]]   # (gfu, mesh, extra)
+# ErrorFn = Callable[[Any, Any, Dict[str, Any]], float]      # (gfu, mesh, extra) -> float
 
 # %% [markdown]
 # ## Core utilities (rates + annotations)
@@ -776,3 +775,5 @@ for eps in eps_list:
     print(table_group(grp))
     plot_group(grp, title=f"Least Square Galerkin (eps={eps:g}, p={order})")
 
+
+# %%
