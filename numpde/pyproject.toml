@@ -17,11 +17,12 @@ dependencies = [
     "pandas>=2.3.3",
     "ptpython>=3.0.32",
     "scipy>=1.16.3",
+    "typer>=0.20.0",
     "webgui-jupyter-widgets>=0.2.37",
 ]
 
 [project.scripts]
-numpde = "numpde:main"
+pde = "numpde.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.9.17,<0.10.0"]

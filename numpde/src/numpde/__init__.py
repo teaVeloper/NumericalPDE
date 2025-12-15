@@ -1,2 +1,1 @@
-def main() -> None:
-    print("Hello from numpde!")
+from .runners import poisson  # noqa: F401
