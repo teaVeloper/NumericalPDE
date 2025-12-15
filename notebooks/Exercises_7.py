@@ -499,7 +499,7 @@ from math import pi
 from math import exp as mexp, pi
 from ngsolve import exp as ngexp, CF, sin, cos, x
 
-def uex_duex_eps(eps: float):
+def _uex_duex_eps(eps: float):
     k = 11*pi
     denom = 1 + (eps*k)**2
 
@@ -515,6 +515,43 @@ def uex_duex_eps(eps: float):
 
     u  = C1 + C2*ngexp(x/eps) + A*sin(k*x) + B*cos(k*x)
     du = (C2/eps)*ngexp(x/eps) + A*k*cos(k*x) - B*k*sin(k*x)
+
+    return CF(u), CF(du)
+
+def uex_duex_eps(eps: float):
+    k = 11*pi
+    denom = 1 + (eps*k)**2
+
+    # A and B are correct
+    A = eps / denom
+    B = -1.0 / (k*denom)
+
+    # Pre-calculate the scale factor for the boundary layer
+    # We use your 'q' trick logic but fold it into the exponent
+    q = mexp(-1.0/eps) 
+    
+    # This factor handles the denominator 1/(e^{1/eps} - 1)
+    # factor = 1 / (1 - e^{-1/eps}) which is approx 1.0 for small eps
+    factor = 1.0 / (1.0 - q) 
+
+    # Base coefficients
+    # Coeff for the boundary layer term
+    # We separate the exponential part out
+    C2_pre = -(2.0/(k*denom)) * factor
+    
+    # C1 calculation is safe
+    # We reconstruct the effective C2 value just for C1
+    C2_val = C2_pre * q 
+    C1 = 1.0/(k*denom) - C2_val
+
+    # --- THE ROBUST FIX ---
+    # Instead of C2 * exp(x/eps), we use C2_pre * exp((x-1)/eps)
+    # This ensures we never evaluate a positive exponent
+    
+    u  = C1 + C2_pre * ngexp((x-1)/eps) + A*sin(k*x) + B*cos(k*x)
+    
+    # Derivative: d/dx( e^{(x-1)/eps} ) = (1/eps) * e^{(x-1)/eps}
+    du = (C2_pre/eps) * ngexp((x-1)/eps) + A*k*cos(k*x) - B*k*sin(k*x)
 
     return CF(u), CF(du)
 
@@ -859,71 +896,12 @@ def err_GLS_norm_advecdiff(gfu, mesh, extra):
     val = Integrate(v*v + eps*vx*vx + tau*Lv*Lv, mesh)
     return float(np.sqrt(val))
 
-def err_SUPG_norm(gfu, mesh, extra):
-    eps  = float(extra["eps"])
-    beta = float(extra["beta"])
-    uex  = extra["uex"]
-    tau  = extra["tau"] # This is a CoefficientFunction from the solver
-
-    # --- 1. GridFunction Derivatives ---
-    # First derivative (Standard)
-    uh_x  = gfu.Diff(x)
-    
-    # Second derivative (MUST use 'hesse' operator)
-    # In 1D, the Hessian is a 1x1 matrix containing u_xx. 
-    # We select [0] to get it as a scalar.
-    uh_xx = gfu.Operator("hesse")[0]
-
-    # --- 2. Exact Solution Derivatives ---
-    # uex is symbolic (CF), so we can just chain Diff safely
-    u_x   = uex.Diff(x)
-    u_xx  = u_x.Diff(x)
-
-    # --- 3. Residual Calculation ---
-    v   = gfu - uex
-    vx  = uh_x - u_x
-    vxx = uh_xx - u_xx
-
-    # Calculate the residual of the ERROR (Lv)
-    # Strong form: -eps*u_xx + beta*u_x
-    Lv = -eps*vxx + beta*vx
-
-    # Integrate the GLS/SUPG norm
-    # ||e||^2_GLS = ||e||^2 + eps*||e'||^2 + tau*||Le||^2
-    val = Integrate(v*v + eps*vx*vx + tau*Lv*Lv, mesh)
-    
-    return float(np.sqrt(val))
-
-def err_fosls_functional(gfu, mesh, extra):
-    # Reconstruct the residuals to see how well we solved the system
-    eps = 1e-4 # You might want to pass this in extra if it varies
-    if "params" in extra: # Handle parameter passing if needed
-         pass
-         
-    # Retrieve the sigma component we saved earlier
-    gfu_sig = extra["gfu_sig"]
-    beta = extra["beta"]
-    
-    u_x = grad(gfu)[0]
-    sig = gfu_sig
-    sig_x = grad(gfu_sig)[0]
-    
-    # Exact f for residual calc
-    f = CF(sin(11*pi*x)) 
-    
-    # Recalculate residuals
-    res1 = sig - u_x
-    res2 = -eps*sig_x + beta*sig - f
-    
-    # The functional value J
-    val = Integrate(res1*res1 + res2*res2, mesh)
-    return float(np.sqrt(val))
 
 
 # %%
 
 import numpy as np
-gls_errors = {"L2": err_L2_advecdiff, "H1": err_H1_advecdiff, "GLS": err_fosls_functional}
+gls_errors = {"L2": err_L2_advecdiff, "H1": err_H1_advecdiff, "GLS": err_GLS_norm_advecdiff}
 for eps in eps_list:
     std = run_study(
         solve_fn=get_fosls_solver(eps, beta=1.0),
